@@ -9660,7 +9660,7 @@ async function sendSimulatedPhoto() {
     
     closeModal('modal-photo-sim');
 }
-/* ================= 🎙️ 语音消息 & 转文字核心逻辑 (真实API版) ================= */
+/* ================= 🎙️ 语音消息 & 转文字核心逻辑 (修复增强版) ================= */
 
 let mediaRecorder;
 let audioChunks = [];
@@ -9669,28 +9669,35 @@ let recognition; // 语音识别对象
 let isRecording = false;
 let startRecordTime = 0;
 let finalTranscript = ""; // 最终识别的文字
+let tempTranscript = "";  // 临时的实时文字（防止松手太快没存进去）
 
 // 初始化语音功能
 function initVoiceFeatures() {
-    // 绑定半圆按钮的触摸事件
     const btn = document.getElementById('btn-voice-record');
     if(!btn) return;
 
-    btn.addEventListener('touchstart', startVoiceRecord, {passive: false});
-    btn.addEventListener('touchmove', handleVoiceMove, {passive: false});
-    btn.addEventListener('touchend', endVoiceRecord);
+    // 移除旧的监听器防止重复绑定
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    const bindBtn = document.getElementById('btn-voice-record');
+
+    // 绑定触摸事件
+    bindBtn.addEventListener('touchstart', startVoiceRecord, {passive: false});
+    bindBtn.addEventListener('touchmove', handleVoiceMove, {passive: false});
+    bindBtn.addEventListener('touchend', endVoiceRecord);
     
-    // 兼容PC鼠标调试
-    btn.addEventListener('mousedown', startVoiceRecord);
-    window.addEventListener('mousemove', handleVoiceMove); // 绑在window上防止移出区域失效
-    window.addEventListener('mouseup', endVoiceRecord);
+    // 兼容PC鼠标
+    bindBtn.addEventListener('mousedown', startVoiceRecord);
 }
 
 // 1. 打开语音面板
 function openVoicePanel() {
-    closeToolPanel(); // 关闭底部其他面板
+    closeToolPanel(); 
     document.getElementById('voice-overlay').classList.add('show');
-    initVoiceFeatures(); // 确保绑定
+    initVoiceFeatures(); 
+    
+    // 重置文字提示
+    document.getElementById('voice-realtime-text').innerText = "...";
 }
 
 // 2. 开始录音 (按下)
@@ -9699,6 +9706,7 @@ async function startVoiceRecord(e) {
     isRecording = true;
     startRecordTime = Date.now();
     finalTranscript = "";
+    tempTranscript = "";
     audioChunks = [];
 
     // UI 更新
@@ -9708,7 +9716,7 @@ async function startVoiceRecord(e) {
     document.getElementById('btn-voice-record').classList.add('active');
 
     try {
-        // A. 启动麦克风录音
+        // A. 启动麦克风录音 (用于保存音频文件)
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         voiceStream = stream;
         mediaRecorder = new MediaRecorder(stream);
@@ -9717,35 +9725,45 @@ async function startVoiceRecord(e) {
         };
         mediaRecorder.start();
 
-        // B. 启动语音识别 (Web Speech API)
+        // B. 启动语音识别 (Web Speech API - 用于转文字)
         if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
-            recognition.lang = 'zh-CN'; // 设置中文
+            recognition.lang = 'zh-CN'; // 强制中文
             recognition.continuous = true;
-            recognition.interimResults = true; // 实时显示结果
+            recognition.interimResults = true; // 必须开启，否则说话中间停顿可能导致识别断开
 
             recognition.onresult = (event) => {
-                let interimTranscript = '';
+                let interim = '';
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
                         finalTranscript += event.results[i][0].transcript;
                     } else {
-                        interimTranscript += event.results[i][0].transcript;
+                        interim += event.results[i][0].transcript;
                     }
                 }
-                // 实时更新UI上的文字
-                document.getElementById('voice-realtime-text').innerText = finalTranscript + interimTranscript;
+                // 存入临时变量，防止松手时 final 还没生成
+                tempTranscript = finalTranscript + interim;
+                
+                // 实时显示在绿色气泡下方
+                document.getElementById('voice-realtime-text').innerText = tempTranscript || "正在听...";
+            };
+
+            recognition.onerror = (event) => {
+                console.log("语音识别错误:", event.error);
+                if(event.error === 'not-allowed') {
+                    document.getElementById('voice-realtime-text').innerText = "请允许麦克风权限";
+                }
             };
 
             recognition.start();
         } else {
-            document.getElementById('voice-realtime-text').innerText = "当前浏览器不支持实时转文字";
+            document.getElementById('voice-realtime-text').innerText = "浏览器不支持转文字(请用Chrome/Safari)";
         }
 
     } catch (err) {
         console.error("麦克风启动失败:", err);
-        alert("无法访问麦克风，请检查权限。");
+        alert("无法访问麦克风，请检查：\n1. 是否允许了权限\n2. 是否使用 HTTPS 或 localhost 访问");
         closeVoicePanel();
     }
 }
@@ -9755,8 +9773,8 @@ let currentAction = 'send'; // send | cancel | trans
 
 function handleVoiceMove(e) {
     if(!isRecording) return;
+    if(e.cancelable) e.preventDefault();
     
-    // 获取手指坐标
     let clientX, clientY;
     if (e.touches && e.touches.length > 0) {
         clientX = e.touches[0].clientX;
@@ -9766,15 +9784,14 @@ function handleVoiceMove(e) {
         clientY = e.clientY;
     }
 
-    // 检测是否滑到了“取消”或“转文字”区域
     const cancelBtn = document.getElementById('btn-voice-cancel');
     const transBtn = document.getElementById('btn-voice-trans');
     const cancelRect = cancelBtn.getBoundingClientRect();
     const transRect = transBtn.getBoundingClientRect();
 
-    // 简单的碰撞检测 (扩大一点判定范围)
+    // 碰撞检测
     const hitTest = (rect, x, y) => {
-        return x >= rect.left - 20 && x <= rect.right + 20 && y >= rect.top - 20 && y <= rect.bottom + 20;
+        return x >= rect.left - 30 && x <= rect.right + 30 && y >= rect.top - 30 && y <= rect.bottom + 30;
     };
 
     if (hitTest(cancelRect, clientX, clientY)) {
@@ -9782,19 +9799,19 @@ function handleVoiceMove(e) {
         cancelBtn.classList.add('hover');
         transBtn.classList.remove('hover');
         document.getElementById('voice-status-text').innerText = "松开 取消";
-        document.getElementById('voice-wave-box').style.background = "#ff3b30"; // 变红
+        document.getElementById('voice-wave-box').style.background = "#ff3b30"; 
     } else if (hitTest(transRect, clientX, clientY)) {
         currentAction = 'trans';
         transBtn.classList.add('hover');
         cancelBtn.classList.remove('hover');
         document.getElementById('voice-status-text').innerText = "松开 转文字";
-        document.getElementById('voice-wave-box').style.background = "#fff"; // 变白
+        document.getElementById('voice-wave-box').style.background = "#fff"; 
     } else {
         currentAction = 'send';
         cancelBtn.classList.remove('hover');
         transBtn.classList.remove('hover');
         document.getElementById('voice-status-text').innerText = "松开 发送";
-        document.getElementById('voice-wave-box').style.background = "#59f059"; // 恢复绿
+        document.getElementById('voice-wave-box').style.background = "#59f059"; 
     }
 }
 
@@ -9803,49 +9820,46 @@ function endVoiceRecord(e) {
     if(!isRecording) return;
     isRecording = false;
     
-    // 停止录音和识别
+    // 停止硬件录音
     if(mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
     if(voiceStream) voiceStream.getTracks().forEach(track => track.stop());
+    
+    // 停止语音识别
     if(recognition) recognition.stop();
 
-    // 延迟一点处理，确保 ondataavailable 跑完
+    // 给一点时间让最后的音频数据处理完
     setTimeout(() => {
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         const duration = Math.round((Date.now() - startRecordTime) / 1000) || 1;
         
+        // 优先使用 final，如果没生成 final 就用 temp
+        const resultText = finalTranscript || tempTranscript;
+
         if (currentAction === 'cancel') {
-            // 取消：啥也不做
             console.log("录音已取消");
-        } else if (currentAction === 'trans') {
-            // 转文字：填入输入框，不立即发送
+        } 
+        else if (currentAction === 'trans') {
+            // 转文字模式：直接上屏到输入框，不发语音
             const input = document.getElementById('msg-input');
-            input.value = finalTranscript || "未识别到语音";
+            input.value = resultText || "";
             input.focus();
-        } else {
-            // 发送：直接发语音气泡
-            sendVoiceMsg(audioBlob, duration, finalTranscript);
+        } 
+        else {
+            // 发送模式：发送语音气泡 + 隐藏的文字
+            // 如果时间太短（少于1秒）且没有识别出文字，可能是误触
+            if(duration < 1 && !resultText) {
+                // 不做处理
+            } else {
+                sendVoiceMsg(audioBlob, duration, resultText);
+            }
         }
 
         closeVoicePanel();
-    }, 200);
-}
-
-// 关闭面板并重置
-function closeVoicePanel() {
-    document.getElementById('voice-overlay').classList.remove('show');
-    document.getElementById('voice-wave-box').classList.remove('recording');
-    document.getElementById('btn-voice-record').classList.remove('active');
-    document.getElementById('voice-wave-box').style.background = "#59f059"; 
-    document.getElementById('btn-voice-cancel').classList.remove('hover');
-    document.getElementById('btn-voice-trans').classList.remove('hover');
-    isRecording = false;
+    }, 300); // 延迟300ms，确保数据打包完成
 }
 
 // 5. 发送语音消息 (存入DB)
 async function sendVoiceMsg(blob, duration, text) {
-    if(duration < 1) return alert("录音时间太短啦");
-
-    // 将 Blob 转为 Base64 方便存入 IndexedDB
     const reader = new FileReader();
     reader.readAsDataURL(blob);
     reader.onloadend = async function() {
@@ -9855,13 +9869,16 @@ async function sendVoiceMsg(blob, duration, text) {
         const curPid = localStorage.getItem('cur_pid') || (userPersonas[0] && userPersonas[0].id);
         const t = Date.now();
 
+        // 默认提示语
+        const safeText = text && text.trim() ? text : "未识别到清晰语音";
+
         const msgObj = {
             role: 'user',
-            type: 'voice', // 标记为语音
+            type: 'voice', 
             content: '[语音消息]', 
             voiceData: base64Audio,
             duration: duration,
-            transcription: text || "未能识别出文字", // 存入识别结果
+            transcription: safeText, // 这里存入识别的文字
             personaId: curPid,
             t: t
         };
@@ -9875,92 +9892,16 @@ async function sendVoiceMsg(blob, duration, text) {
             // 刷新界面
             const box = document.getElementById('chat-msg-container');
             await tryAppendTimestamp(box, t);
+            
+            // 立即渲染上屏
+            // 注意：确保你前面定义了 createMsgHtmlWithVoice 或者整合了逻辑
             box.insertAdjacentHTML('beforeend', await createMsgHtmlWithVoice(msgObj, userPersonas, await DB.get('characters')));
             box.scrollTop = box.scrollHeight;
+            
+            // 触发 AI 回复 (语音通常也需要回复)
+            triggerAiReply();
         }
     }
-}
-
-// 6. 播放语音
-function playVoice(id, base64) {
-    const audio = new Audio(base64);
-    audio.play();
-    
-    // 简单的播放动画效果
-    const icon = document.getElementById('voice-icon-' + id);
-    const originalText = icon.innerText;
-    icon.innerText = "🔊"; // 播放中
-    audio.onended = () => {
-        icon.innerText = "📶"; // 恢复 WiFi 图标模拟声波
-    };
-}
-
-// 7. 切换显示转文字结果
-function toggleVoiceTextResult(id) {
-    const box = document.getElementById('voice-trans-' + id);
-    if(box.style.display === 'block') {
-        box.style.display = 'none';
-    } else {
-        box.style.display = 'block';
-    }
-}
-
-/* ================= 💉 注入到 createMsgHtml 的补丁 ================= */
-// 你需要把原来的 createMsgHtml 函数里加上对 type: 'voice' 的判断
-// 为了方便，我这里写一个新的 helper，请在原来的 createMsgHtml 里调用或者整合进去
-
-// 请在原来的 createMsgHtml 函数中的 if/else 链条中加入下面这段逻辑：
-/*
-    else if (m.type === 'voice') {
-        bubbleClass = 'msg-bubble is-voice';
-        // 绿色气泡 (me)
-        if (me) bubbleClass += ' me'; 
-        
-        contentHtml = `
-            <div class="voice-content-row" onclick="playVoice('${m.t}', '${m.voiceData}')">
-                <span id="voice-icon-${m.t}" class="voice-icon">📶</span> 
-                <span class="voice-duration">${m.duration}"</span>
-                <span class="voice-to-text-btn" onclick="event.stopPropagation(); toggleVoiceTextResult('${m.t}')">转文字</span>
-            </div>
-            <!-- 转文字的白色浮窗 -->
-            <div id="voice-trans-${m.t}" class="voice-trans-result">
-                ${m.transcription}
-            </div>
-        `;
-    }
-*/
-
-// 为了让你直接能用，下面是一个完整的针对语音消息的 HTML 生成包装函数，
-// 你可以把这段代码复制到原来的 createMsgHtml 函数上方，
-// 然后在 createMsgHtml 里调用它。
-async function createMsgHtmlWithVoice(m, userPersonas, characters) {
-    // 这里简单复刻原来的逻辑并插入 voice 判断
-    // 注意：这是为了演示整合，你最好直接修改你原本的 createMsgHtml
-    
-    // 如果是语音消息，走特殊渲染
-    if (m.type === 'voice') {
-        const p = userPersonas.find(x => x.id == m.personaId);
-        const ava = p ? (p.avatar || DEFAULT_AVATAR) : DEFAULT_AVATAR;
-        
-        return `
-            <div class="msg-row me" id="msg-${m.t}">
-                <div class="msg-checkbox"></div>
-                <img src="${ava}" class="msg-avatar">
-                <div class="msg-bubble is-voice" style="background:#95ec69; border-radius:6px;">
-                    <div class="voice-content-row" onclick="playVoice('${m.t}', '${m.voiceData}')">
-                        <span id="voice-icon-${m.t}" class="voice-icon" style="transform: rotate(90deg); display:inline-block;">(((</span> 
-                        <span class="voice-duration">${m.duration}"</span>
-                        <span class="voice-to-text-btn" onclick="event.stopPropagation(); toggleVoiceTextResult('${m.t}')">转文字</span>
-                    </div>
-                    <div id="voice-trans-${m.t}" class="voice-trans-result">
-                        ${m.transcription}
-                    </div>
-                </div>
-            </div>`;
-    } 
-    
-    // 如果不是语音，调用你原来的函数 (假设你原来的函数叫 createMsgHtml)
-    return createMsgHtml(m, userPersonas, characters);
 }
 </script>
 </body>
