@@ -9903,6 +9903,88 @@ async function sendVoiceMsg(blob, duration, text) {
         }
     }
 }
+
+// 6. 播放语音
+function playVoice(id, base64) {
+    const audio = new Audio(base64);
+    audio.play();
+    
+    // 简单的播放动画效果
+    const icon = document.getElementById('voice-icon-' + id);
+    const originalText = icon.innerText;
+    icon.innerText = "🔊"; // 播放中
+    audio.onended = () => {
+        icon.innerText = "📶"; // 恢复 WiFi 图标模拟声波
+    };
+}
+
+// 7. 切换显示转文字结果
+function toggleVoiceTextResult(id) {
+    const box = document.getElementById('voice-trans-' + id);
+    if(box.style.display === 'block') {
+        box.style.display = 'none';
+    } else {
+        box.style.display = 'block';
+    }
+}
+
+/* ================= 💉 注入到 createMsgHtml 的补丁 ================= */
+// 你需要把原来的 createMsgHtml 函数里加上对 type: 'voice' 的判断
+// 为了方便，我这里写一个新的 helper，请在原来的 createMsgHtml 里调用或者整合进去
+
+// 请在原来的 createMsgHtml 函数中的 if/else 链条中加入下面这段逻辑：
+/*
+    else if (m.type === 'voice') {
+        bubbleClass = 'msg-bubble is-voice';
+        // 绿色气泡 (me)
+        if (me) bubbleClass += ' me'; 
+        
+        contentHtml = `
+            <div class="voice-content-row" onclick="playVoice('${m.t}', '${m.voiceData}')">
+                <span id="voice-icon-${m.t}" class="voice-icon">📶</span> 
+                <span class="voice-duration">${m.duration}"</span>
+                <span class="voice-to-text-btn" onclick="event.stopPropagation(); toggleVoiceTextResult('${m.t}')">转文字</span>
+            </div>
+            <!-- 转文字的白色浮窗 -->
+            <div id="voice-trans-${m.t}" class="voice-trans-result">
+                ${m.transcription}
+            </div>
+        `;
+    }
+*/
+
+// 为了让你直接能用，下面是一个完整的针对语音消息的 HTML 生成包装函数，
+// 你可以把这段代码复制到原来的 createMsgHtml 函数上方，
+// 然后在 createMsgHtml 里调用它。
+async function createMsgHtmlWithVoice(m, userPersonas, characters) {
+    // 这里简单复刻原来的逻辑并插入 voice 判断
+    // 注意：这是为了演示整合，你最好直接修改你原本的 createMsgHtml
+    
+    // 如果是语音消息，走特殊渲染
+    if (m.type === 'voice') {
+        const p = userPersonas.find(x => x.id == m.personaId);
+        const ava = p ? (p.avatar || DEFAULT_AVATAR) : DEFAULT_AVATAR;
+        
+        return `
+            <div class="msg-row me" id="msg-${m.t}">
+                <div class="msg-checkbox"></div>
+                <img src="${ava}" class="msg-avatar">
+                <div class="msg-bubble is-voice" style="background:#95ec69; border-radius:6px;">
+                    <div class="voice-content-row" onclick="playVoice('${m.t}', '${m.voiceData}')">
+                        <span id="voice-icon-${m.t}" class="voice-icon" style="transform: rotate(90deg); display:inline-block;">(((</span> 
+                        <span class="voice-duration">${m.duration}"</span>
+                        <span class="voice-to-text-btn" onclick="event.stopPropagation(); toggleVoiceTextResult('${m.t}')">转文字</span>
+                    </div>
+                    <div id="voice-trans-${m.t}" class="voice-trans-result">
+                        ${m.transcription}
+                    </div>
+                </div>
+            </div>`;
+    } 
+    
+    // 如果不是语音，调用你原来的函数 (假设你原来的函数叫 createMsgHtml)
+    return createMsgHtml(m, userPersonas, characters);
+}
 </script>
 </body>
 </html>
